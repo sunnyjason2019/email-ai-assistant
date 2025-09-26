@@ -1,0 +1,39 @@
+{
+    "manifest_version": 3,
+    "name": "邮件AI助手",
+    "version": "1.0",
+    "description": "使用OpenAI API的智能邮件写作助手",
+    "permissions": [
+      "activeTab",
+      "storage"
+    ],
+    "host_permissions": [
+      "*://mail.google.com/*",
+      "*://outlook.live.com/*",
+      "*://outlook.office.com/*",
+      "https://api.openai.com/*"
+    ],
+    "action": {
+      "default_popup": "popup.html",
+      "default_title": "邮件AI助手"
+    },
+    "content_scripts": [
+      {
+        "matches": [
+          "*://mail.google.com/*",
+          "*://outlook.live.com/*",
+          "*://outlook.office.com/*"
+        ],
+        "js": ["content.js"],
+        "css": ["styles.css"]
+      }
+    ],
+    "background": {
+      "service_worker": "background.js"
+    },
+    "icons": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  }
