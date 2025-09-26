@@ -1,14 +1,19 @@
-// 专门针对Outlook优化的content.js
-console.log('Outlook-optimized Content Script Loaded');
+// 增强版 content.js - 智能写作提示功能
+console.log('Enhanced Writing Assistant Loaded');
 
 class EmailAssistant {
     constructor() {
         this.apiKey = '';
+        this.isTyping = false;
+        this.typingTimer = null;
+        this.lastSuggestionTime = 0;
+        this.currentEditor = null;
+        this.suggestionPopup = null;
         this.init();
     }
     
     async init() {
-        console.log('EmailAssistant initializing for Outlook...');
+        console.log('EmailAssistant initializing with contextual writing...');
         
         // 获取API Key
         const result = await chrome.storage.sync.get(['openai_api_key']);
@@ -22,6 +27,7 @@ class EmailAssistant {
         // 等待页面加载完成后添加AI按钮
         setTimeout(() => {
             this.addAIButton();
+            this.setupSmartWritingAssistant();
         }, 3000);
         
         // 监听来自popup的消息
@@ -42,14 +48,574 @@ class EmailAssistant {
         return 'unknown';
     }
     
+    // 新增：设置智能写作助手
+    setupSmartWritingAssistant() {
+        console.log('Setting up smart writing assistant...');
+        
+        // 监听编辑器变化
+        this.monitorEditors();
+        
+        // 创建智能提示样式
+        this.injectSmartStyles();
+    }
+    
+    // 新增：注入智能提示相关样式
+    injectSmartStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            .ai-writing-suggestion {
+                position: absolute;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 12px 16px;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 500;
+                box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3);
+                z-index: 100000;
+                max-width: 300px;
+                cursor: pointer;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                line-height: 1.4;
+                animation: suggestionFadeIn 0.3s ease-out;
+                border: 1px solid rgba(255,255,255,0.2);
+            }
+            
+            @keyframes suggestionFadeIn {
+                from { opacity: 0; transform: translateY(-10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            
+            .ai-writing-suggestion:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 12px 40px rgba(102, 126, 234, 0.4);
+            }
+            
+            .ai-writing-suggestion::before {
+                content: '💡';
+                margin-right: 6px;
+            }
+            
+            .ai-writing-suggestion::after {
+                content: '';
+                position: absolute;
+                bottom: -6px;
+                left: 20px;
+                width: 0;
+                height: 0;
+                border-left: 6px solid transparent;
+                border-right: 6px solid transparent;
+                border-top: 6px solid #667eea;
+            }
+            
+            .ai-context-panel {
+                position: fixed;
+                top: 100px;
+                right: 20px;
+                width: 320px;
+                background: white;
+                border: 1px solid #e1e5e9;
+                border-radius: 12px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.12);
+                z-index: 99999;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                max-height: 400px;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .ai-context-panel-header {
+                padding: 16px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                font-weight: 600;
+                font-size: 14px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .ai-context-panel-content {
+                padding: 16px;
+                overflow-y: auto;
+                flex-grow: 1;
+            }
+            
+            .ai-suggestion-item {
+                padding: 12px;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                margin-bottom: 10px;
+                cursor: pointer;
+                transition: all 0.2s ease;
+                background: #fafafa;
+            }
+            
+            .ai-suggestion-item:hover {
+                border-color: #667eea;
+                background: #f8faff;
+                transform: translateY(-1px);
+            }
+            
+            .ai-suggestion-title {
+                font-weight: 500;
+                color: #1f2937;
+                font-size: 13px;
+                margin-bottom: 4px;
+            }
+            
+            .ai-suggestion-preview {
+                color: #6b7280;
+                font-size: 12px;
+                line-height: 1.4;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // 新增：监控编辑器输入
+    monitorEditors() {
+        const checkForEditors = () => {
+            const editors = this.findAllEditors();
+            editors.forEach(editor => {
+                if (!editor.hasSmartAssistant) {
+                    this.attachSmartAssistant(editor);
+                    editor.hasSmartAssistant = true;
+                }
+            });
+        };
+        
+        // 初始检查
+        checkForEditors();
+        
+        // 定期检查新编辑器
+        setInterval(checkForEditors, 3000);
+        
+        // 监听DOM变化
+        const observer = new MutationObserver(() => {
+            setTimeout(checkForEditors, 1000);
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    }
+    
+    // 新增：查找所有编辑器
+    findAllEditors() {
+        const selectors = [
+            '[contenteditable="true"][aria-label*="Message body"]',
+            '[contenteditable="true"][role="textbox"]',
+            '.ms-rte-editor[contenteditable="true"]',
+            'div[contenteditable="true"][data-testid="rooster-editor"]',
+            '.allowTextSelection[contenteditable="true"]',
+            '[contenteditable="true"][aria-label*="邮件正文"]',
+            '[contenteditable="true"]'
+        ];
+        
+        const editors = [];
+        selectors.forEach(selector => {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(element => {
+                const rect = element.getBoundingClientRect();
+                if (rect.width > 200 && rect.height > 100) {
+                    editors.push(element);
+                }
+            });
+        });
+        
+        return editors;
+    }
+    
+    // 新增：为编辑器附加智能助手
+    attachSmartAssistant(editor) {
+        console.log('Attaching smart assistant to editor:', editor);
+        
+        let typingTimer = null;
+        let lastContent = '';
+        
+        // 输入事件监听
+        const onInput = (e) => {
+            clearTimeout(typingTimer);
+            
+            const currentContent = editor.innerText || editor.textContent || '';
+            
+            // 检查是否有实际内容变化
+            if (currentContent !== lastContent && currentContent.trim().length > 10) {
+                typingTimer = setTimeout(() => {
+                    this.analyzeContextAndSuggest(editor, currentContent);
+                }, 2000); // 停止输入2秒后触发建议
+            }
+            
+            lastContent = currentContent;
+        };
+        
+        // 键盘事件监听
+        const onKeyDown = (e) => {
+            // Tab键接受建议
+            if (e.key === 'Tab' && this.suggestionPopup) {
+                e.preventDefault();
+                this.acceptSuggestion();
+            }
+            
+            // Escape键关闭建议
+            if (e.key === 'Escape' && this.suggestionPopup) {
+                this.closeSuggestion();
+            }
+            
+            // 空格键或句号后可能触发快速建议
+            if ((e.key === ' ' || e.key === '.' || e.key === '？' || e.key === '?') && this.apiKey) {
+                setTimeout(() => {
+                    const content = editor.innerText || editor.textContent || '';
+                    if (content.trim().length > 20) {
+                        this.quickContextSuggestion(editor, content);
+                    }
+                }, 500);
+            }
+        };
+        
+        // 焦点事件
+        const onFocus = () => {
+            this.currentEditor = editor;
+        };
+        
+        const onBlur = () => {
+            setTimeout(() => {
+                if (this.suggestionPopup && !this.suggestionPopup.matches(':hover')) {
+                    this.closeSuggestion();
+                }
+            }, 200);
+        };
+        
+        // 绑定事件
+        editor.addEventListener('input', onInput);
+        editor.addEventListener('keydown', onKeyDown);
+        editor.addEventListener('focus', onFocus);
+        editor.addEventListener('blur', onBlur);
+        
+        // 存储事件处理器以便后续清理
+        editor.smartAssistantHandlers = {
+            onInput, onKeyDown, onFocus, onBlur
+        };
+    }
+    
+    // 新增：分析上下文并提供建议
+    async analyzeContextAndSuggest(editor, content) {
+        if (!this.apiKey || content.length < 20) return;
+        
+        // 防止过频繁的请求
+        const now = Date.now();
+        if (now - this.lastSuggestionTime < 5000) return;
+        this.lastSuggestionTime = now;
+        
+        console.log('Analyzing context for suggestions...');
+        
+        try {
+            // 分析邮件上下文
+            const context = this.analyzeEmailContext(content);
+            const suggestions = await this.generateContextualSuggestions(content, context);
+            
+            if (suggestions && suggestions.length > 0) {
+                this.showContextualSuggestions(editor, suggestions, context);
+            }
+        } catch (error) {
+            console.error('Error generating contextual suggestions:', error);
+        }
+    }
+    
+    // 新增：快速上下文建议（用于空格/句号后）
+    async quickContextSuggestion(editor, content) {
+        if (!this.apiKey) return;
+        
+        // 获取当前句子
+        const sentences = content.split(/[.!?。！？]/);
+        const currentSentence = sentences[sentences.length - 1].trim();
+        
+        if (currentSentence.length < 10) return;
+        
+        try {
+            const suggestion = await this.generateQuickSuggestion(currentSentence, content);
+            if (suggestion) {
+                this.showInlineSuggestion(editor, suggestion);
+            }
+        } catch (error) {
+            console.error('Error generating quick suggestion:', error);
+        }
+    }
+    
+    // 新增：分析邮件上下文
+    analyzeEmailContext(content) {
+        const context = {
+            type: 'unknown',
+            tone: 'neutral',
+            language: 'mixed',
+            intent: 'general',
+            urgency: 'normal',
+            recipientType: 'unknown'
+        };
+        
+        // 检测语言
+        const chineseRatio = (content.match(/[\u4e00-\u9fff]/g) || []).length / content.length;
+        context.language = chineseRatio > 0.3 ? 'chinese' : 'english';
+        
+        // 检测邮件类型
+        const lowerContent = content.toLowerCase();
+        if (lowerContent.includes('meeting') || lowerContent.includes('会议') || lowerContent.includes('schedule')) {
+            context.type = 'meeting';
+        } else if (lowerContent.includes('report') || lowerContent.includes('报告') || lowerContent.includes('update')) {
+            context.type = 'report';
+        } else if (lowerContent.includes('request') || lowerContent.includes('请求') || lowerContent.includes('需要')) {
+            context.type = 'request';
+        } else if (lowerContent.includes('thank') || lowerContent.includes('感谢')) {
+            context.type = 'gratitude';
+        } else if (lowerContent.includes('follow up') || lowerContent.includes('跟进')) {
+            context.type = 'followup';
+        }
+        
+        // 检测语气
+        if (lowerContent.includes('urgent') || lowerContent.includes('asap') || lowerContent.includes('紧急')) {
+            context.urgency = 'high';
+            context.tone = 'urgent';
+        } else if (lowerContent.includes('please') || lowerContent.includes('请') || lowerContent.includes('谢谢')) {
+            context.tone = 'polite';
+        }
+        
+        // 检测收件人类型
+        if (lowerContent.includes('dear') || lowerContent.includes('hi') || lowerContent.includes('hello')) {
+            context.recipientType = 'external';
+        } else if (lowerContent.includes('team') || lowerContent.includes('everyone') || lowerContent.includes('同事')) {
+            context.recipientType = 'team';
+        }
+        
+        return context;
+    }
+    
+    // 新增：生成上下文建议
+    async generateContextualSuggestions(content, context) {
+        const prompt = `作为专业的邮件写作助手，请根据以下邮件内容和上下文信息，提供3个有用的写作建议：
+
+邮件内容：
+${content}
+
+上下文信息：
+- 邮件类型：${context.type}
+- 语言：${context.language}
+- 语气：${context.tone}
+- 紧急程度：${context.urgency}
+
+请提供以下格式的建议：
+1. 建议标题|具体建议内容（20-40字）
+2. 建议标题|具体建议内容（20-40字）  
+3. 建议标题|具体建议内容（20-40字）
+
+建议应该针对当前内容，帮助完善邮件的表达、结构或礼貌程度。`;
+
+        try {
+            const response = await this.callOpenAI(prompt, 0.8, 500);
+            if (response) {
+                return this.parseSuggestions(response);
+            }
+        } catch (error) {
+            console.error('Error calling OpenAI for suggestions:', error);
+        }
+        
+        return null;
+    }
+    
+    // 新增：生成快速建议
+    async generateQuickSuggestion(currentSentence, fullContent) {
+        const prompt = `根据这个邮件的上下文："${fullContent.substring(0, 200)}..."，为当前句子"${currentSentence}"提供一个简短的继续建议（10-20字），帮助完成表达：`;
+        
+        try {
+            const response = await this.callOpenAI(prompt, 0.9, 100);
+            return response ? response.trim() : null;
+        } catch (error) {
+            console.error('Error generating quick suggestion:', error);
+            return null;
+        }
+    }
+    
+    // 新增：解析建议格式
+    parseSuggestions(response) {
+        const suggestions = [];
+        const lines = response.split('\n').filter(line => line.trim());
+        
+        lines.forEach(line => {
+            const match = line.match(/^\d+\.\s*(.+?)\|(.+)/);
+            if (match) {
+                suggestions.push({
+                    title: match[1].trim(),
+                    content: match[2].trim()
+                });
+            }
+        });
+        
+        return suggestions.length > 0 ? suggestions : null;
+    }
+    
+    // 新增：显示上下文建议面板
+    showContextualSuggestions(editor, suggestions, context) {
+        // 移除已存在的面板
+        const existing = document.getElementById('ai-context-panel');
+        if (existing) {
+            existing.remove();
+        }
+        
+        const panel = document.createElement('div');
+        panel.id = 'ai-context-panel';
+        panel.className = 'ai-context-panel';
+        
+        panel.innerHTML = `
+            <div class="ai-context-panel-header">
+                <span>🎯 智能写作建议</span>
+                <span style="cursor: pointer; font-size: 16px;" onclick="this.parentNode.parentNode.remove()">×</span>
+            </div>
+            <div class="ai-context-panel-content">
+                ${suggestions.map(suggestion => `
+                    <div class="ai-suggestion-item" data-suggestion="${encodeURIComponent(suggestion.content)}">
+                        <div class="ai-suggestion-title">${suggestion.title}</div>
+                        <div class="ai-suggestion-preview">${suggestion.content}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+        
+        document.body.appendChild(panel);
+        
+        // 绑定点击事件
+        panel.querySelectorAll('.ai-suggestion-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const suggestionText = decodeURIComponent(item.dataset.suggestion);
+                this.applySuggestion(editor, suggestionText);
+                panel.remove();
+            });
+        });
+        
+        // 5秒后自动隐藏
+        setTimeout(() => {
+            if (panel.parentNode) {
+                panel.style.opacity = '0.7';
+                panel.style.transition = 'opacity 0.3s ease';
+            }
+        }, 5000);
+        
+        // 10秒后完全移除
+        setTimeout(() => {
+            if (panel.parentNode) {
+                panel.remove();
+            }
+        }, 10000);
+    }
+    
+    // 新增：显示内联建议
+    showInlineSuggestion(editor, suggestion) {
+        // 移除已存在的建议
+        this.closeSuggestion();
+        
+        const rect = editor.getBoundingClientRect();
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        
+        this.suggestionPopup = document.createElement('div');
+        this.suggestionPopup.className = 'ai-writing-suggestion';
+        this.suggestionPopup.textContent = suggestion;
+        this.suggestionPopup.setAttribute('data-suggestion', suggestion);
+        
+        // 定位到编辑器附近
+        this.suggestionPopup.style.top = (rect.bottom + scrollTop + 10) + 'px';
+        this.suggestionPopup.style.left = (rect.left + 20) + 'px';
+        
+        document.body.appendChild(this.suggestionPopup);
+        
+        // 点击应用建议
+        this.suggestionPopup.addEventListener('click', () => {
+            this.acceptSuggestion();
+        });
+        
+        // 3秒后自动淡出
+        setTimeout(() => {
+            if (this.suggestionPopup) {
+                this.suggestionPopup.style.opacity = '0.6';
+            }
+        }, 3000);
+        
+        // 6秒后自动移除
+        setTimeout(() => {
+            this.closeSuggestion();
+        }, 6000);
+    }
+    
+    // 新增：接受建议
+    acceptSuggestion() {
+        if (!this.suggestionPopup || !this.currentEditor) return;
+        
+        const suggestion = this.suggestionPopup.getAttribute('data-suggestion');
+        if (suggestion) {
+            this.applySuggestion(this.currentEditor, suggestion);
+        }
+        
+        this.closeSuggestion();
+    }
+    
+    // 新增：应用建议到编辑器
+    applySuggestion(editor, suggestion) {
+        try {
+            // 获取当前光标位置
+            const selection = window.getSelection();
+            
+            if (selection.rangeCount > 0) {
+                const range = selection.getRangeAt(0);
+                
+                // 在光标位置插入建议
+                const textNode = document.createTextNode(suggestion);
+                range.insertNode(textNode);
+                
+                // 设置光标到插入文本之后
+                range.setStartAfter(textNode);
+                range.setEndAfter(textNode);
+                selection.removeAllRanges();
+                selection.addRange(range);
+            } else {
+                // 如果没有光标位置，追加到末尾
+                const currentContent = editor.innerText || editor.textContent || '';
+                editor.textContent = currentContent + ' ' + suggestion;
+            }
+            
+            // 触发输入事件
+            const inputEvent = new Event('input', { bubbles: true });
+            editor.dispatchEvent(inputEvent);
+            
+            // 聚焦编辑器
+            editor.focus();
+            
+            this.showNotification('建议已应用！', 'success');
+            
+        } catch (error) {
+            console.error('Error applying suggestion:', error);
+            // 备用方案：复制到剪贴板
+            navigator.clipboard.writeText(suggestion).then(() => {
+                this.showNotification('建议已复制到剪贴板！', 'success');
+            });
+        }
+    }
+    
+    // 新增：关闭建议
+    closeSuggestion() {
+        if (this.suggestionPopup) {
+            this.suggestionPopup.remove();
+            this.suggestionPopup = null;
+        }
+    }
+    
+    // 修改原有的addAIButton方法，添加更多上下文功能
     addAIButton() {
-        console.log('Adding AI button for', this.platform);
+        console.log('Adding enhanced AI button for', this.platform);
         
         let selectors = [];
         
         if (this.platform === 'outlook') {
             selectors = [
-                // Outlook Web 编辑器选择器
                 '[contenteditable="true"][aria-label*="Message body"]',
                 '[contenteditable="true"][role="textbox"]',
                 '.ms-rte-editor[contenteditable="true"]',
@@ -72,20 +638,9 @@ class EmailAssistant {
         
         for (let selector of selectors) {
             const elements = document.querySelectorAll(selector);
-            console.log(`Trying selector "${selector}": found ${elements.length} elements`);
-            
             for (let element of elements) {
                 const rect = element.getBoundingClientRect();
                 const style = getComputedStyle(element);
-                
-                console.log('Element check:', {
-                    selector,
-                    width: rect.width,
-                    height: rect.height,
-                    display: style.display,
-                    visibility: style.visibility,
-                    element: element
-                });
                 
                 if (rect.width > 200 && rect.height > 100 && 
                     style.display !== 'none' && 
@@ -99,6 +654,15 @@ class EmailAssistant {
         }
         
         if (composeArea && !document.getElementById('ai-assistant-btn')) {
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.cssText = `
+                display: flex;
+                gap: 8px;
+                margin: 8px;
+                align-items: center;
+            `;
+            
+            // 主AI按钮
             const aiButton = document.createElement('button');
             aiButton.id = 'ai-assistant-btn';
             aiButton.innerHTML = '🤖 AI助手';
@@ -111,7 +675,6 @@ class EmailAssistant {
                 font-size: 13px;
                 font-weight: 600;
                 cursor: pointer;
-                margin: 8px;
                 box-shadow: 0 2px 8px rgba(79, 70, 229, 0.3);
                 transition: all 0.2s ease;
                 z-index: 99999;
@@ -119,671 +682,109 @@ class EmailAssistant {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             `;
             
+            // 智能写作按钮
+            const smartWritingButton = document.createElement('button');
+            smartWritingButton.innerHTML = '💡 智能写作';
+            smartWritingButton.style.cssText = `
+                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+                color: white;
+                border: none;
+                padding: 8px 12px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: 500;
+                cursor: pointer;
+                box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
+                transition: all 0.2s ease;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            `;
+            
+            // 状态指示器
+            const statusIndicator = document.createElement('div');
+            statusIndicator.id = 'smart-writing-status';
+            statusIndicator.innerHTML = this.apiKey ? '✅ 智能提示已启用' : '⚠️ 需要设置API Key';
+            statusIndicator.style.cssText = `
+                font-size: 11px;
+                color: ${this.apiKey ? '#059669' : '#d97706'};
+                font-weight: 500;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            `;
+            
             // 添加悬停效果
-            aiButton.addEventListener('mouseenter', () => {
-                aiButton.style.transform = 'translateY(-2px)';
-                aiButton.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.4)';
+            [aiButton, smartWritingButton].forEach(btn => {
+                btn.addEventListener('mouseenter', () => {
+                    btn.style.transform = 'translateY(-2px)';
+                    btn.style.boxShadow = btn === aiButton ? 
+                        '0 4px 12px rgba(79, 70, 229, 0.4)' : 
+                        '0 4px 12px rgba(16, 185, 129, 0.4)';
+                });
+                
+                btn.addEventListener('mouseleave', () => {
+                    btn.style.transform = 'translateY(0)';
+                    btn.style.boxShadow = btn === aiButton ? 
+                        '0 2px 8px rgba(79, 70, 229, 0.3)' : 
+                        '0 2px 6px rgba(16, 185, 129, 0.3)';
+                });
             });
             
-            aiButton.addEventListener('mouseleave', () => {
-                aiButton.style.transform = 'translateY(0)';
-                aiButton.style.boxShadow = '0 2px 8px rgba(79, 70, 229, 0.3)';
-            });
-            
+            // 事件监听
             aiButton.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log('AI button clicked');
                 this.showAIMenu(e.target);
             });
             
-            // 尝试多种方式添加按钮
+            smartWritingButton.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.toggleSmartWritingMode(composeArea);
+            });
+            
+            // 组装按钮
+            buttonContainer.appendChild(aiButton);
+            buttonContainer.appendChild(smartWritingButton);
+            buttonContainer.appendChild(statusIndicator);
+            
+            // 添加到页面
             try {
-                // 找到工具栏或编辑器附近的位置
                 const toolbar = document.querySelector('[role="toolbar"]') || 
                                document.querySelector('.ms-rte-toolbar') ||
                                composeArea.parentNode;
                 
                 if (toolbar && toolbar !== composeArea) {
-                    toolbar.appendChild(aiButton);
+                    toolbar.appendChild(buttonContainer);
                 } else {
-                    composeArea.parentNode.insertBefore(aiButton, composeArea);
+                    composeArea.parentNode.insertBefore(buttonContainer, composeArea);
                 }
-                console.log('AI button added successfully');
+                console.log('AI buttons added successfully');
             } catch (error) {
-                console.error('Error adding button:', error);
-                // 备用方案：添加到页面右上角
-                document.body.appendChild(aiButton);
-                aiButton.style.position = 'fixed';
-                aiButton.style.top = '100px';
-                aiButton.style.right = '20px';
+                console.error('Error adding buttons:', error);
+                document.body.appendChild(buttonContainer);
+                buttonContainer.style.position = 'fixed';
+                buttonContainer.style.top = '100px';
+                buttonContainer.style.right = '20px';
             }
         } else if (!composeArea) {
             console.log('No suitable compose area found, will retry...');
-            // 列出所有contenteditable元素用于调试
-            const allEditables = document.querySelectorAll('[contenteditable="true"]');
-            console.log('All contenteditable elements:', Array.from(allEditables).map(el => ({
-                element: el,
-                rect: el.getBoundingClientRect(),
-                ariaLabel: el.getAttribute('aria-label'),
-                className: el.className,
-                tagName: el.tagName
-            })));
-            
-            // 5秒后重试
             setTimeout(() => {
                 this.addAIButton();
             }, 5000);
         }
     }
     
-    showAIMenu(button) {
-        console.log('Showing AI menu');
-        
-        // 移除已存在的菜单
-        const existingMenu = document.getElementById('ai-menu');
-        if (existingMenu) {
-            existingMenu.remove();
-        }
-        
-        // 创建快速菜单
-        const menu = document.createElement('div');
-        menu.id = 'ai-menu';
-        menu.style.cssText = `
-            position: fixed;
-            background: white;
-            border: 1px solid #e1e5e9;
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.12);
-            z-index: 100000;
-            min-width: 180px;
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        `;
-        
-        const menuItems = [
-            {action: 'reply', text: '📝 智能回复', desc: '基于邮件生成回复'},
-            {action: 'improve', text: '✨ 改进文本', desc: '优化选中或编辑器文本'},
-            {action: 'translate', text: '🌐 翻译', desc: '中英文互译'},
-            {action: 'summarize', text: '📋 总结', desc: '提取要点'},
-            {action: 'formal', text: '👔 正式化', desc: '改为正式语气'},
-            {action: 'friendly', text: '😊 友好化', desc: '改为友好语气'},
-            {action: 'test', text: '🧪 测试', desc: '测试功能'}
-        ];
-        
-        menuItems.forEach((item, index) => {
-            const menuItem = document.createElement('div');
-            menuItem.innerHTML = `
-                <div style="font-weight: 500; color: #1f2937;">${item.text}</div>
-                <div style="font-size: 12px; color: #6b7280; margin-top: 2px;">${item.desc}</div>
-            `;
-            menuItem.style.cssText = `
-                padding: 12px 16px;
-                cursor: pointer;
-                transition: background-color 0.2s;
-                border-bottom: ${index < menuItems.length - 1 ? '1px solid #f3f4f6' : 'none'};
-            `;
-            
-            menuItem.addEventListener('mouseenter', () => {
-                menuItem.style.backgroundColor = '#f8fafc';
-            });
-            
-            menuItem.addEventListener('mouseleave', () => {
-                menuItem.style.backgroundColor = '';
-            });
-            
-            menuItem.addEventListener('click', (e) => {
-                e.stopPropagation();
-                console.log('Menu item clicked:', item.action);
-                if (item.action === 'test') {
-                    this.testAllFunctions();
-                } else {
-                    this.handleCommand({action: item.action});
-                }
-                menu.remove();
-            });
-            
-            menu.appendChild(menuItem);
-        });
-        
-        document.body.appendChild(menu);
-        
-        // 定位菜单
-        const rect = button.getBoundingClientRect();
-        const menuHeight = 400; // 预估菜单高度
-        
-        // 确保菜单不超出屏幕
-        let top = rect.bottom + 5;
-        if (top + menuHeight > window.innerHeight) {
-            top = rect.top - menuHeight - 5;
-        }
-        
-        let left = rect.left;
-        if (left + 180 > window.innerWidth) {
-            left = rect.right - 180;
-        }
-        
-        menu.style.top = Math.max(5, top) + 'px';
-        menu.style.left = Math.max(5, left) + 'px';
-        
-        // 点击其他地方关闭菜单
-        const closeMenu = (e) => {
-            if (!menu.contains(e.target) && e.target !== button) {
-                menu.remove();
-                document.removeEventListener('click', closeMenu);
-            }
-        };
-        
-        setTimeout(() => {
-            document.addEventListener('click', closeMenu);
-        }, 100);
-    }
-    
-    // 新增：测试所有功能
-    testAllFunctions() {
-        console.log('Testing all functions...');
-        
-        const composeArea = this.findComposeArea();
-        const selectedText = this.getSelectedText();
-        const emailContent = this.getEmailContent();
-        
-        let testResult = `🧪 功能测试结果 (${new Date().toLocaleString()})\n\n`;
-        testResult += `✅ 编辑器检测: ${composeArea ? '找到编辑器' : '未找到编辑器'}\n`;
-        testResult += `✅ 选中文本: "${selectedText}" (${selectedText.length}字符)\n`;
-        testResult += `✅ 邮件内容: "${emailContent.substring(0, 50)}..." (${emailContent.length}字符)\n`;
-        testResult += `✅ API Key: ${this.apiKey ? '已设置' : '未设置'}\n`;
-        testResult += `✅ 平台: ${this.platform}\n\n`;
-        testResult += `如果看到这段文字，说明基本功能正常！`;
-        
-        this.insertResponse(testResult, false);
-        this.showNotification('功能测试完成，结果已插入编辑器', 'success');
-    }
-    
-    async handleCommand(request) {
-        console.log('Handling command:', request.action);
-        
+    // 新增：切换智能写作模式
+    toggleSmartWritingMode(editor) {
         if (!this.apiKey) {
-            this.showNotification('请先在扩展弹窗中设置OpenAI API Key', 'error');
+            this.showNotification('请先设置OpenAI API Key', 'error');
             return;
         }
         
-        // 获取内容时显示更详细的信息
-        const selectedText = this.getSelectedText();
-        const emailContent = this.getEmailContent();
+        const isActive = editor.hasAttribute('data-smart-writing');
         
-        console.log('=== Content Analysis ===');
-        console.log('Selected text:', `"${selectedText}" (${selectedText.length} chars)`);
-        console.log('Email content:', `"${emailContent.substring(0, 100)}..." (${emailContent.length} chars)`);
-        
-        // 决定使用哪个文本
-        let targetText = '';
-        if (selectedText.trim()) {
-            targetText = selectedText.trim();
-            console.log('Using selected text');
-        } else if (emailContent.trim()) {
-            targetText = emailContent.trim();
-            console.log('Using email content');
+        if (isActive) {
+            // 关闭智能写作
+            editor.removeAttribute('data-smart-writing');
+            this.showNotification('智能写作提示已关闭', 'success');
+            this.closeSuggestion();
         } else {
-            // 如果都没有内容，尝试获取整个页面的文本内容
-            const pageText = this.getPageText();
-            if (pageText.trim()) {
-                targetText = pageText.trim();
-                console.log('Using page text');
-            } else {
-                targetText = '请先在编辑器中输入一些文本，或选中需要处理的文本';
-                console.log('No content found, using default message');
-            }
-        }
-        
-        console.log('Final target text:', `"${targetText.substring(0, 200)}..." (${targetText.length} chars)`);
-        
-        let prompt = '';
-        
-        switch (request.action) {
-            case 'reply':
-                prompt = `请基于以下邮件内容生成一个专业的回复：\n\n${targetText}\n\n请用中文回复，语气要礼貌专业。`;
-                break;
-            case 'improve':
-                prompt = `请改进以下文本，使其更加清晰和专业：\n\n${targetText}`;
-                break;
-            case 'translate':
-                // 检测语言并相应翻译
-                const isChinese = /[\u4e00-\u9fff]/.test(targetText);
-                if (isChinese) {
-                    prompt = `请将以下中文文本翻译成英文：\n\n${targetText}`;
-                } else {
-                    prompt = `请将以下英文文本翻译成中文：\n\n${targetText}`;
-                }
-                break;
-            case 'summarize':
-                prompt = `请总结以下内容的要点：\n\n${targetText}`;
-                break;
-            case 'formal':
-                prompt = `请将以下文本改写得更加正式和专业：\n\n${targetText}`;
-                break;
-            case 'friendly':
-                prompt = `请将以下文本改写得更加友好和亲切：\n\n${targetText}`;
-                break;
-            case 'custom':
-                prompt = `${request.customPrompt}\n\n内容：${targetText}`;
-                break;
-        }
-        
-        if (prompt) {
-            console.log('Sending prompt to AI:', prompt.substring(0, 200) + '...');
-            this.showNotification('AI正在处理中...', 'loading');
-            
-            const response = await this.callOpenAI(prompt);
-            
-            if (response) {
-                console.log('Received AI response:', response.substring(0, 200) + '...');
-                this.insertResponse(response, request.action === 'reply');
-                this.showNotification('AI处理完成！', 'success');
-            } else {
-                this.showNotification('AI处理失败，请检查API Key或网络', 'error');
-            }
-        }
-    }
-    
-    // 新增：获取页面文本内容
-    getPageText() {
-        // 尝试从邮件列表或其他地方获取文本
-        const textSources = [
-            '.ms-MessageBody',
-            '[role="main"]',
-            '.ms-rte-editor',
-            '.allowTextSelection'
-        ];
-        
-        for (let selector of textSources) {
-            const element = document.querySelector(selector);
-            if (element) {
-                const text = element.innerText || element.textContent || '';
-                if (text.trim() && text.length > 10) {
-                    console.log('Found page text from:', selector);
-                    return text.trim();
-                }
-            }
-        }
-        
-        return '';
-    }
-    
-    async callOpenAI(prompt) {
-        console.log('Calling OpenAI API...');
-        
-        try {
-            const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
-                },
-                body: JSON.stringify({
-                    model: 'gpt-3.5-turbo',
-                    messages: [
-                        {
-                            role: 'system',
-                            content: '你是一个专业的邮件写作助手。请提供清晰、专业、有用的回复。如果用户的内容是英文，请用英文回复；如果是中文，请用中文回复。'
-                        },
-                        {
-                            role: 'user',
-                            content: prompt
-                        }
-                    ],
-                    max_tokens: 1500,
-                    temperature: 0.7
-                })
-            });
-            
-            const data = await response.json();
-            console.log('OpenAI response status:', response.status);
-            console.log('OpenAI response:', data);
-            
-            if (data.error) {
-                console.error('OpenAI error:', data.error);
-                this.showNotification(`OpenAI错误: ${data.error.message}`, 'error');
-                return null;
-            }
-            
-            if (response.ok && data.choices && data.choices[0]) {
-                return data.choices[0].message.content.trim();
-            } else {
-                throw new Error('Invalid response format');
-            }
-        } catch (error) {
-            console.error('API call failed:', error);
-            this.showNotification(`网络错误: ${error.message}`, 'error');
-            return null;
-        }
-    }
-    
-    getSelectedText() {
-        const selection = window.getSelection();
-        const selectedText = selection.toString().trim();
-        console.log('Selected text detection:', {
-            hasSelection: selection.rangeCount > 0,
-            isCollapsed: selection.isCollapsed,
-            selectedText: selectedText,
-            length: selectedText.length
-        });
-        return selectedText;
-    }
-    
-    getEmailContent() {
-        const composeArea = this.findComposeArea();
-        if (composeArea) {
-            const methods = [
-                () => composeArea.innerText,
-                () => composeArea.textContent,
-                () => composeArea.value,
-                () => composeArea.innerHTML.replace(/<[^>]*>/g, '')
-            ];
-            
-            for (let method of methods) {
-                try {
-                    const content = method();
-                    if (content && content.trim()) {
-                        console.log('Email content extracted using method:', method.toString());
-                        return content.trim();
-                    }
-                } catch (e) {
-                    console.log('Method failed:', e);
-                }
-            }
-        }
-        
-        console.log('No email content found in compose area');
-        return '';
-    }
-    
-    findComposeArea() {
-        let selectors = [];
-        
-        if (this.platform === 'outlook') {
-            selectors = [
-                '[contenteditable="true"][aria-label*="Message body"]',
-                '[contenteditable="true"][role="textbox"]',
-                '.ms-rte-editor[contenteditable="true"]',
-                'div[contenteditable="true"][data-testid="rooster-editor"]',
-                '.allowTextSelection[contenteditable="true"]',
-                '[contenteditable="true"]'
-            ];
-        } else {
-            selectors = [
-                '[contenteditable="true"][aria-label*="邮件正文"]',
-                '[contenteditable="true"][role="textbox"]',
-                '[contenteditable="true"]'
-            ];
-        }
-        
-        for (let selector of selectors) {
-            const elements = document.querySelectorAll(selector);
-            for (let element of elements) {
-                const rect = element.getBoundingClientRect();
-                const style = getComputedStyle(element);
-                
-                if (rect.width > 200 && rect.height > 100 && 
-                    style.display !== 'none' && 
-                    style.visibility !== 'hidden') {
-                    console.log('Found compose area:', selector, element);
-                    return element;
-                }
-            }
-        }
-        
-        console.warn('No compose area found');
-        return null;
-    }
-    
-    insertResponse(response, isReply = false) {
-        console.log('Inserting response:', response.substring(0, 100) + '...');
-        
-        const composeArea = this.findComposeArea();
-        
-        if (!composeArea) {
-            console.error('Cannot find compose area for insertion');
-            this.showResponseModal(response);
-            return;
-        }
-        
-        try {
-            // 保存当前光标位置
-            const selection = window.getSelection();
-            const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-            
-            if (isReply) {
-                // 替换所有内容
-                composeArea.innerHTML = '';
-                composeArea.textContent = response;
-            } else {
-                // 在光标位置插入内容
-                if (range && !range.collapsed) {
-                    // 有选中文本，替换选中的内容
-                    range.deleteContents();
-                    range.insertNode(document.createTextNode(response));
-                } else {
-                    // 在末尾添加
-                    const currentContent = composeArea.textContent || '';
-                    const newContent = currentContent + (currentContent ? '\n\n' : '') + response;
-                    composeArea.textContent = newContent;
-                }
-            }
-            
-            // 聚焦并设置光标到末尾
-            composeArea.focus();
-            const newRange = document.createRange();
-            newRange.selectNodeContents(composeArea);
-            newRange.collapse(false);
-            selection.removeAllRanges();
-            selection.addRange(newRange);
-            
-            // 触发输入事件以确保Outlook检测到变化
-            const inputEvent = new Event('input', { bubbles: true });
-            composeArea.dispatchEvent(inputEvent);
-            
-            // 高亮效果
-            this.highlightInsertedContent(composeArea);
-            
-            console.log('Response inserted successfully');
-            
-        } catch (error) {
-            console.error('Error inserting response:', error);
-            this.showResponseModal(response);
-        }
-    }
-    
-    highlightInsertedContent(element) {
-        const originalBg = element.style.backgroundColor;
-        element.style.backgroundColor = '#e0f2fe';
-        element.style.transition = 'background-color 0.3s ease';
-        
-        setTimeout(() => {
-            element.style.backgroundColor = originalBg;
-        }, 2000);
-    }
-    
-    showResponseModal(response) {
-        // 创建模态窗口显示结果
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            border: 1px solid #d1d5db;
-            border-radius: 12px;
-            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1);
-            z-index: 100002;
-            max-width: 600px;
-            max-height: 70vh;
-            display: flex;
-            flex-direction: column;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        `;
-        
-        modal.innerHTML = `
-            <div style="padding: 20px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; border-radius: 12px 12px 0 0;">
-                <h3 style="margin: 0; color: #1f2937; font-size: 18px;">🤖 AI处理结果</h3>
-                <p style="margin: 5px 0 0 0; color: #6b7280; font-size: 14px;">请复制以下内容到邮件编辑器中</p>
-            </div>
-            <div style="padding: 20px; overflow-y: auto; flex-grow: 1;">
-                <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; font-family: inherit;">${response}</div>
-            </div>
-            <div style="padding: 20px; border-top: 1px solid #e5e7eb; display: flex; gap: 10px; justify-content: flex-end; background: #f8fafc; border-radius: 0 0 12px 12px;">
-                <button id="copy-response" style="background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer; font-weight: 500;">复制内容</button>
-                <button id="close-modal" style="background: #6b7280; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; cursor: pointer;">关闭</button>
-            </div>
-        `;
-        
-        // 添加背景遮罩
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 100001;
-        `;
-        
-        document.body.appendChild(overlay);
-        document.body.appendChild(modal);
-        
-        // 复制按钮
-        modal.querySelector('#copy-response').addEventListener('click', () => {
-            navigator.clipboard.writeText(response).then(() => {
-                this.showNotification('内容已复制到剪贴板！', 'success');
-            });
-        });
-        
-        // 关闭按钮
-        const closeModal = () => {
-            modal.remove();
-            overlay.remove();
-        };
-        
-        modal.querySelector('#close-modal').addEventListener('click', closeModal);
-        overlay.addEventListener('click', closeModal);
-    }
-    
-    showNotification(message, type) {
-        console.log('Showing notification:', message, type);
-        
-        // 移除已存在的通知
-        const existing = document.getElementById('ai-notification');
-        if (existing) {
-            existing.remove();
-        }
-        
-        const notification = document.createElement('div');
-        notification.id = 'ai-notification';
-        notification.textContent = message;
-        
-        let bgColor, textColor, borderColor, icon;
-        switch (type) {
-            case 'success':
-                bgColor = '#d1fae5';
-                textColor = '#065f46';
-                borderColor = '#a7f3d0';
-                icon = '✅';
-                break;
-            case 'error':
-                bgColor = '#fee2e2';
-                textColor = '#991b1b';
-                borderColor = '#fecaca';
-                icon = '❌';
-                break;
-            case 'loading':
-                bgColor = '#dbeafe';
-                textColor = '#1e40af';
-                borderColor = '#93c5fd';
-                icon = '⏳';
-                break;
-        }
-        
-        notification.innerHTML = `${icon} ${message}`;
-        notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 12px 20px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            z-index: 100001;
-            max-width: 400px;
-            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
-            background: ${bgColor};
-            color: ${textColor};
-            border: 1px solid ${borderColor};
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            word-wrap: break-word;
-        `;
-        
-        document.body.appendChild(notification);
-        
-        // 自动移除
-        const autoRemoveTime = type === 'loading' ? 0 : (type === 'error' ? 6000 : 4000);
-        if (autoRemoveTime > 0) {
-            setTimeout(() => {
-                if (notification.parentNode) {
-                    notification.remove();
-                }
-            }, autoRemoveTime);
-        }
-    }
-}
-
-// 页面加载完成后初始化
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => new EmailAssistant());
-} else {
-    new EmailAssistant();
-}
-
-// 也在页面完全加载后初始化
-window.addEventListener('load', () => {
-    setTimeout(() => {
-        if (!window.emailAssistant) {
-            window.emailAssistant = new EmailAssistant();
-        }
-    }, 2000);
-});
-
-// 监听页面变化，适应Outlook的动态加载
-const observer = new MutationObserver((mutations) => {
-    let shouldReinit = false;
-    
-    mutations.forEach((mutation) => {
-        // 检查是否有新的编辑器出现
-        if (mutation.type === 'childList') {
-            mutation.addedNodes.forEach((node) => {
-                if (node.nodeType === Node.ELEMENT_NODE) {
-                    if (node.querySelector && node.querySelector('[contenteditable="true"]')) {
-                        shouldReinit = true;
-                    }
-                }
-            });
-        }
-    });
-    
-    if (shouldReinit && !document.getElementById('ai-assistant-btn')) {
-        console.log('Detected new editor, reinitializing...');
-        setTimeout(() => {
-            if (window.emailAssistant) {
-                window.emailAssistant.addAIButton();
-            }
-        }, 1000);
-    }
-});
-
-// 开始观察页面变化
-observer.observe(document.body, {
-    childList: true,
-    subtree: true
-});
-
-console.log('Outlook-optimized content script initialization completed');
+            // 开启智能写作
